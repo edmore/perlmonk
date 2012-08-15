@@ -242,12 +242,17 @@ sub processEmailFor($){
   my $subject;
   my $body;
   my $issue = $jira->getIssue($issuekey);
+  my $boundary;
 
-  if ($issue->{description} =~ /<(.*?)>/) {
+  if ($issue->{description} =~ /\[via(.*?)\]/) {
+    $boundary = $1;
+  }
+
+  if ($boundary =~ /<(.*?)>/) {
     $email = $1;
   }
 
-  if ($issue->{description} =~ /:\s*(.*?)\s*</) {
+  if ($boundary =~ /:\s*(.*?)\s*</) {
     $recipient_name = $1;
   }
 
