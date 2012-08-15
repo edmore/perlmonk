@@ -17,13 +17,13 @@ use Data::Dumper;
 use JIRA::Client;
 
 require '/usr/local/sakaiconfig/vula_auth.pl';
+require 'requestor_email.pl';
 
 use strict;
 
 my $MAX_FILESIZE = 102400;
 my $DEBUG = "FALSE";
 my $IMAGE_WIDTH = 600;
-my $IMAGE_HEIGHT = 450;
 my @ACCEPTED_FORMATS = ( "jpeg", "jpg", "gif", "png" );
 my $TARGET_FOLDER = $ARGV[0];
 
@@ -169,8 +169,9 @@ sub checkAttachmentFor($){
       close $files or die "$files: $!";
 
       system("svn ci -m \"$issue : Adding $attachment_filename\" --username $svn_user --password $svn_pass") if -e $attachment_filename;
-      logger("Resolve $issue\n");
-      resolveIssue($jira, $issue, "Image has been uploaded.");
+      logger("Email Requestor and Resolve");
+      my ($emailbody, $recipient) = processEmailFor($issue);
+      resolveIssue($jira, $issue, "Emailed to: $recipient\n\n---\n\n$emailbody");
       assignIssue($jira, $issue, $jira_assignee,"");
     }
     else
@@ -217,10 +218,10 @@ sub check_format($){
   return;
 }
 
-## Check that dimensions are 600 x 450
+## Check that dimensions have a width of 600 and height between 400 and 450 px
 sub check_dimensions($$){
   my ( $w, $h ) = @_;
-  return ( $w == $IMAGE_WIDTH && $h == $IMAGE_HEIGHT );
+  return ( $w == $IMAGE_WIDTH && ($h >= 400 && $h <= 450) );
 }
 
 ## Check if a URL is valid
@@ -228,5 +229,51 @@ sub isValidURL($){
   my $uri = shift;
   return unless is_http_uri($uri) || is_https_uri($uri);
   return 1;
+}
+
+# Process the email request
+sub processEmailFor($){
+  my $issuekey = shift;
+  my $email;
+  my $recipient_name;
+  my $to;
+  my $cc = "\"The Vula Help Team\" <help\@vula.uct.ac.za>";
+  my $from = $cc;
+  my $subject;
+  my $body;
+  my $issue = $jira->getIssue($issuekey);
+
+  if ($issue->{description} =~ /<(.*?)>/) {
+    $email = $1;
+  }
+
+  if ($issue->{description} =~ /:\s*(.*?)\s*</) {
+    $recipient_name = $1;
+  }
+
+  $subject = "RE: \[$issue->{key}\] $issue->{summary}\n";
+  $body = getLandingPageTemplate( $recipient_name );
+  $to = "\"$recipient_name\" <$email>" if $recipient_name && $email;
+
+  if($to ne ""){
+    mailRequestor($from, $to, $cc, $subject, $body);
+  }
+  return ($body, $email);
+}
+
+# Landing Page Template
+sub getLandingPageTemplate($){
+  my $name = shift;
+my $content = <<END;
+Good day $name,
+
+Your image has been successfully uploaded to the Vula Landing page.
+
+The Vula Help Team
+Centre for Educational Technology, UCT
+Email: help\@vula.uct.ac.za
+Phone: 021-650-5500
+END
+return $content;
 }
 
