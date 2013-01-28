@@ -19,11 +19,12 @@ use JIRA::Client;
 require '/usr/local/sakaiconfig/vula_auth.pl';
 require 'requestor_email.pl';
 
+$ENV{'PERL_LWP_SSL_VERIFY_HOSTNAME'} = 0;
+
 use strict;
 
 my $MAX_FILESIZE = 102400;
 my $DEBUG = "FALSE";
-my $IMAGE_WIDTH = 600;
 my @ACCEPTED_FORMATS = ( "jpeg", "jpg", "gif", "png" );
 my $TARGET_FOLDER = $ARGV[0];
 
@@ -141,7 +142,7 @@ sub checkAttachmentFor($){
     my $image_url = $jira_host."/secure/attachment/".$attachment_id."/".$attachment_filename;
 
     #Get the image and store locally
-    my $command = "wget --no-check-certificate ".$image_url."\?os_username\=$jira_user\\&os_password\=$jira_pass -O $attachment_filename";
+    my $command = "wget --no-check-certificate -q ".$image_url."\?os_username\=$jira_user\\&os_password\=$jira_pass -O $attachment_filename";
     system($command);
 
     #Check the image dimensions
@@ -170,15 +171,16 @@ sub checkAttachmentFor($){
 
       system("svn ci -m \"$issue : Adding $attachment_filename\" --username $svn_user --password $svn_pass") if -e $attachment_filename;
       logger("Email Requestor and Resolve");
-      my ($emailbody, $recipient) = processEmailFor($issue);
+      my ($emailbody, $recipient) = processEmailFor($issue, "success");
       resolveIssue($jira, $issue, "Emailed to: $recipient\n\n---\n\n$emailbody");
       assignIssue($jira, $issue, $jira_assignee,"");
     }
     else
     {
       logger("Verification failed\n");
-      logger("Re-assign\n");
-      assignIssue($jira, $issue, $jira_assignee, "Image not uploaded. Please check size, format or dimensions.");
+      logger("Email Requestor to notify them of failure and Re-assign\n");
+      my ($emailbody, $recipient) = processEmailFor($issue, "failure");
+      assignIssue($jira, $issue, $jira_assignee, "Emailed to: $recipient\n\n---\n\n$emailbody");
       fileCleanup( $attachment_filename );
     }
   }
@@ -221,7 +223,7 @@ sub check_format($){
 ## Check that dimensions have a width of 600 and height between 400 and 450 px
 sub check_dimensions($$){
   my ( $w, $h ) = @_;
-  return ( $w == $IMAGE_WIDTH && ($h >= 400 && $h <= 450) );
+  return ( ($w >= 580 && $w <= 610)  && ($h >= 430 && $h <= 460) );
 }
 
 ## Check if a URL is valid
@@ -232,8 +234,9 @@ sub isValidURL($){
 }
 
 # Process the email request
-sub processEmailFor($){
+sub processEmailFor($$){
   my $issuekey = shift;
+  my $state = shift;
   my $email;
   my $recipient_name;
   my $to;
@@ -257,7 +260,13 @@ sub processEmailFor($){
   }
 
   $subject = "RE: \[$issue->{key}\] $issue->{summary}\n";
-  $body = getLandingPageTemplate( $recipient_name );
+
+  if($state eq "success"){
+      $body = getLandingPageTemplate($recipient_name, $issue);
+  }else{
+      $body = getLandingPageFailTemplate($recipient_name, $issue);
+  }
+
   $to = "\"$recipient_name\" <$email>" if $recipient_name && $email;
 
   if($to ne ""){
@@ -266,13 +275,29 @@ sub processEmailFor($){
   return ($body, $email);
 }
 
-# Landing Page Template
-sub getLandingPageTemplate($){
+# Landing Page Template - Success
+sub getLandingPageTemplate($$){
   my $name = shift;
-my $content = <<END;
-Good day $name,
+  my $issue = shift;
+  my ($category, $url, $expires) = getCustomFieldsFor( $issue );
+  my $attachments = $jira->getAttachmentsFromIssue($issue);
+  my $id = @{$attachments}[0]->{id};
+  my $mimetype = @{$attachments}[0]->{mimetype};
+  my $type = substr($mimetype, 6) if $mimetype =~ /image/;
+  my $attached_file = $id.".".$type;
 
-Your image has been successfully uploaded to the Vula Landing page.
+  $url = "No hyperlink provided." if ($url eq "");
+  $expires = str2time($expires);
+  $expires = $time{ 'dd-Mon-yyyy', $expires };
+
+my $content = <<END;
+Dear $name,
+
+The following image has been added to the Vula home page:
+
+Image: https:\/\/vula.uct.ac.za\/library\/content\/uct/homepage\/$attached_file
+URL: $url
+Expires: $expires
 
 The Vula Help Team
 Centre for Educational Technology, UCT
@@ -282,3 +307,45 @@ END
 return $content;
 }
 
+# Landing Page Template - Failure
+sub getLandingPageFailTemplate($$){
+  my $name = shift;
+  my $issue = shift;
+
+my $content = <<END;
+Dear $name,
+
+Your image could not be added to the Vula home page as it does not conform to our requirements.
+
+An image should meet these specifications:
+Exact dimensions: 600 pixels wide x 450 pixels high
+Maximum file size: 100 KB
+Formats: jpeg, gif or png
+
+The requirements for placing an image on the Vula landing page are:
+
+1) The event or initiative must be organised by UCT staff, or an official student society, or endorsed by the SRC.
+2) The department, society or other organizer of the event or initiative must be clearly identifiable on the image.
+3) The event or initiative must be for UCT staff or students.
+
+For SRC-endorsed events or initiatives, we require an email from the appropriate SRC portfolio co-ordinator endorsing the
+event/initiative and the specific image submitted.
+
+If it is unclear to us whether your image meets the above requirements, we will reject it.
+
+If your event/initiative meets these requirements, please send an image which meets the specifications highlighted above to help\@vula.uct.ac.za:
+
+Please specify the expiry date of the image when the event or initiative is no longer relevant, and an optional URL which the image should be linked to.
+
+If you don\'t have image creation software you can try the free online service offered by pixlr (http:\/\/www.pixlr.com\/editor\/)
+
+Your image, if approved, will usually be placed in the rotation on the Vula landing page within 2 working days. However,
+we do not offer any specific guarantee of how long this process will take, so please plan in advance for time-sensitive images.
+
+The Vula Help Team
+Centre for Educational Technology, UCT
+Email: help\@vula.uct.ac.za
+Phone: 021-650-5500
+END
+return $content;
+}
